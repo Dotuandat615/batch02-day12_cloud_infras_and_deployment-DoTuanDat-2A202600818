@@ -106,18 +106,20 @@ python app.py
 **Nhiệm vụ:** So sánh 2 files `app.py`. Điền vào bảng:
 
 | Feature | Basic | Advanced | Tại sao quan trọng? |
-|---------|-------|----------|---------------------|
-| Config | Hardcode | Env vars | ... |
-| Health check |  |  | ... |
-| Logging | print() | JSON | ... |
-| Shutdown | Đột ngột | Graceful | ... |
+|---------|-------|----------|-----------------------|
+| Config | Hardcode (`OPENAI_API_KEY = "sk-..."`) | Env vars qua `os.getenv()` + `dataclass Settings` | Nếu hardcode secrets → push lên GitHub → lộ key ngay lập tức; env vars thay đổi được mà không cần sửa code |
+| Health check | ❌ Không có | ✅ `/health` (liveness) + `/ready` (readiness) | Platform (Railway, k8s) cần biết container còn sống không để tự restart khi crash |
+| Logging | `print()` thô — log cả secret key ra stdout | Structured JSON logging (`logging` module, không log secrets) | JSON logs dễ parse bởi Datadog/Loki/CloudWatch; log secrets là lỗ hổng bảo mật nghiêm trọng |
+| Shutdown | Đột ngột — process bị kill giữa chừng | Graceful — `SIGTERM` handler + `lifespan` context cho request hoàn thành trước khi tắt | Tránh mất dữ liệu, request bị cắt ngang khi deploy bản mới hoặc scale down |
+| Host binding | `localhost` — chỉ nhận kết nối local | `0.0.0.0` — nhận kết nối từ bên ngoài container | Container có network riêng; bind `localhost` → không ai kết nối được từ ngoài container |
+| Port | Cứng `8000` | Đọc từ `PORT` env var | Railway/Render inject `PORT` tự động; hardcode port → conflict hoặc không chạy được trên cloud |
 
 ###  Checkpoint 1
 
-- [ ] Hiểu tại sao hardcode secrets là nguy hiểm
-- [ ] Biết cách dùng environment variables
-- [ ] Hiểu vai trò của health check endpoint
-- [ ] Biết graceful shutdown là gì
+- [x] Hiểu tại sao hardcode secrets là nguy hiểm
+- [x] Biết cách dùng environment variables
+- [x] Hiểu vai trò của health check endpoint
+- [x] Biết graceful shutdown là gì
 
 ---
 
@@ -143,10 +145,10 @@ cd ../../02-docker/develop
 
 **Nhiệm vụ:** Đọc `Dockerfile` và trả lời:
 
-1. Base image là gì?
-2. Working directory là gì?
-3. Tại sao COPY requirements.txt trước?
-4. CMD vs ENTRYPOINT khác nhau thế nào?
+1. **Base image là gì?** → `python:3.11` (full Python distribution, khoảng 1 GB)
+2. **Working directory là gì?** → `/app` (tất cả code được copy vào đây)
+3. **Tại sao COPY requirements.txt trước?** → **Docker layer cache**: Nếu chỉ code thay đổi mà deps không đổi, layer `pip install` sẽ được cache lại. Nếu copy toàn bộ code trước, mỗi lần sửa code đều phải re-install toàn bộ packages → chậm hơn rất nhiều
+4. **CMD vs ENTRYPOINT?** → `ENTRYPOINT` định nghĩa command cố định không override được dễ dàng. `CMD` là default arguments có thể bị override bằng `docker run <image> <command>`. Tổ hợp: `ENTRYPOINT ["python"]` + `CMD ["app.py"]` cho phép override script nhưng giữ interpreter
 
 ###  Exercise 2.2: Build và run
 
@@ -168,6 +170,9 @@ curl http://localhost:8000/ask -X POST \
 docker images my-agent:develop
 ```
 
+> **Kết quả thực tế:** `my-agent:develop` = **1.66 GB** (disk usage) / 424 MB (content)
+> Container chạy thành công tại `http://localhost:8000`, đã kiểm tra `/health` trả về `{"status":"ok","container":true}`
+
 ###  Exercise 2.3: Multi-stage build
 
 ```bash
@@ -175,25 +180,45 @@ cd ../production
 ```
 
 **Nhiệm vụ:** Đọc `Dockerfile` và tìm:
-- Stage 1 làm gì?
-- Stage 2 làm gì?
-- Tại sao image nhỏ hơn?
+- **Stage 1 (builder)** làm gì? → Dùng `python:3.11-slim`, cài `gcc` + `libpq-dev`, chạy `pip install --user` → tạo ra `/root/.local` chứa tất cả packages
+- **Stage 2 (runtime)** làm gì? → Bắt đầu sạch với `python:3.11-slim`, chỉ `COPY --from=builder /root/.local`, tạo non-root user `appuser`, không có compiler tools
+- **Tại sao image nhỏ hơn?** → Loại bỏ hoàn toàn `gcc`, apt cache, build tools. Chỉ giữ Python runtime + packages cần thiết
 
 Build và so sánh:
 ```bash
-docker build -t my-agent:advanced .
-docker images | grep my-agent
+docker build -f 02-docker/production/Dockerfile -t my-agent:advanced .
+docker images | Select-String my-agent
 ```
+
+> **Kết quả so sánh:**
+> | Image | Size |
+> |-------|------|
+> | `my-agent:develop` (single-stage, `python:3.11`) | **1.66 GB** |
+> | `my-agent:advanced` (multi-stage, `python:3.11-slim`) | **236 MB** |
+>
+> → Multi-stage build nhỏ hơn **~7 lần** so với single-stage!
 
 ###  Exercise 2.4: Docker Compose stack
 
 **Nhiệm vụ:** Đọc `docker-compose.yml` và vẽ architecture diagram.
 
 ```bash
-docker compose up
+docker compose up -d
 ```
 
-Services nào được start? Chúng communicate thế nào?
+**Services được start:** 4 services
+- **agent** — FastAPI AI agent (build từ Dockerfile, chạy truyền qua internal network)
+- **redis** — Cache cho session và rate limiting (`redis:7-alpine`)
+- **qdrant** — Vector database cho RAG (`qdrant/qdrant:v1.9.0`)
+- **nginx** — Reverse proxy, load balancer (expose port 80/443 ra ngoài)
+
+**Communication:**
+```
+Client → Nginx (:80) → agent (:8000) [internal network]
+                              ↓
+                         Redis (:6379) + Qdrant (:6333) [internal network]
+```
+Nginx là điểm vào duy nhất. Agent không expose port trực tiếp, chỉ giao tiếp qua `internal` bridge network.
 
 Test:
 ```bash
@@ -206,12 +231,16 @@ curl http://localhost/ask -X POST \
   -d '{"question": "Explain microservices"}'
 ```
 
+> **Kết quả thực tế:**
+> - `GET http://localhost/health` → `{"status":"ok","uptime_seconds":14.7,"version":"2.0.0"}`
+> - `POST http://localhost/ask` → `{"answer":"Tôi là AI agent được deploy lên cloud..."}`
+
 ###  Checkpoint 2
 
-- [ ] Hiểu cấu trúc Dockerfile
-- [ ] Biết lợi ích của multi-stage builds
-- [ ] Hiểu Docker Compose orchestration
-- [ ] Biết cách debug container (`docker logs`, `docker exec`)
+- [x] Hiểu cấu trúc Dockerfile
+- [x] Biết lợi ích của multi-stage builds
+- [x] Hiểu Docker Compose orchestration
+- [x] Biết cách debug container (`docker logs`, `docker exec`)
 
 ---
 
