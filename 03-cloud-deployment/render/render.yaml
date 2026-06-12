@@ -46,6 +46,7 @@ services:
     name: agent-cache
     plan: free
     maxmemoryPolicy: allkeys-lru
+    ipAllowList: []    # Bắt buộc: [] nghĩa là chỉ cho phép internal services (ví dụ ai-agent) kết nối
 
 # ============================================================
 # Cách deploy:
