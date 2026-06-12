@@ -35,14 +35,16 @@ logger = logging.getLogger(__name__)
 
 START_TIME = time.time()
 _is_ready = False
+_is_shutting_down = False
 _in_flight_requests = 0  # đếm số request đang xử lý
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global _is_ready
+    global _is_ready, _is_shutting_down
 
     # ── Startup ──
+    _is_shutting_down = False
     logger.info("Agent starting up...")
     logger.info("Loading model and checking dependencies...")
     time.sleep(0.2)  # simulate startup time
@@ -53,6 +55,7 @@ async def lifespan(app: FastAPI):
 
     # ── Shutdown ──
     _is_ready = False
+    _is_shutting_down = True
     logger.info("🔄 Graceful shutdown initiated...")
 
     # Chờ request đang xử lý hoàn thành (tối đa 30 giây)
@@ -92,6 +95,8 @@ def root():
 
 @app.post("/ask")
 async def ask_agent(question: str):
+    if _is_shutting_down:
+        raise HTTPException(503, "Agent is shutting down")
     if not _is_ready:
         raise HTTPException(503, "Agent not ready")
     return {"answer": ask(question)}
@@ -164,6 +169,7 @@ def ready():
         )
     return {
         "ready": True,
+        "shutting_down": _is_shutting_down,
         "in_flight_requests": _in_flight_requests,
     }
 
@@ -177,10 +183,17 @@ def handle_sigterm(signum, frame):
     SIGTERM là signal platform gửi khi muốn dừng container.
     Khác với SIGKILL (không thể catch được).
 
-    uvicorn bắt SIGTERM tự động và gọi lifespan shutdown.
-    Hàm này để log thêm thông tin.
+    Đánh dấu app không còn ready để load balancer ngừng gửi request mới.
+    Uvicorn sẽ tiếp tục xử lý signal và gọi lifespan shutdown để chờ các
+    request đang chạy hoàn thành.
     """
-    logger.info(f"Received signal {signum} — uvicorn will handle graceful shutdown")
+    global _is_ready, _is_shutting_down
+    _is_ready = False
+    _is_shutting_down = True
+    logger.info(
+        f"Received signal {signum} — stopping new requests and waiting for "
+        f"{_in_flight_requests} in-flight requests"
+    )
 
 
 signal.signal(signal.SIGTERM, handle_sigterm)

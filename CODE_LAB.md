@@ -312,6 +312,23 @@ curl http://studen-agent-domain/ask -X POST \
   -d '{"question": ""}'
 ```
 
+> 💡 **Mẹo cho Windows PowerShell:**
+> Trong PowerShell, lệnh `curl` mặc định là alias của `Invoke-WebRequest` nên các tham số kiểu Bash như `-X`, `-H`, `-d` sẽ không hoạt động chính xác. Bạn có thể sử dụng các cách sau để test:
+>
+> 1. **Sử dụng `curl.exe` trực tiếp (gọi curl của hệ thống):**
+>    ```powershell
+>    curl.exe http://student-agent-domain/health
+>    curl.exe http://student-agent-domain/ask -X POST -H "Content-Type: application/json" -d '{"question": "Hello"}'
+>    ```
+> 2. **Sử dụng `Invoke-RestMethod` của PowerShell:**
+>    ```powershell
+>    # Health Check
+>    Invoke-RestMethod -Uri "http://student-agent-domain/health" -Method Get
+>    
+>    # Agent Endpoint
+>    Invoke-RestMethod -Uri "http://student-agent-domain/ask" -Method Post -ContentType "application/json" -Body '{"question": "Hello"}'
+>    ```
+
 ###  Exercise 3.2: Deploy Render (15 phút)
 
 ```bash
@@ -330,6 +347,16 @@ cd ../render
 
 **Nhiệm vụ:** So sánh `render.yaml` với `railway.toml`. Khác nhau gì?
 
+> **Trả lời:**
+>
+> | Đặc trưng | `render.yaml` (Render Blueprint) | `railway.toml` (Railway Config) |
+> | :--- | :--- | :--- |
+> | **Mục đích** | **Infrastructure as Code (IaC)** - Định nghĩa và quản lý toàn bộ stack hạ tầng của dự án bao gồm nhiều service khác nhau. | **Single Service Configuration** - Cấu hình riêng lẻ cho một service cụ thể về cách build và chạy. |
+> | **Phạm vi** | **Multi-service**: Có thể định nghĩa nhiều service đồng thời (ví dụ: web app `ai-agent` + database/addon `Redis` trong cùng một file). | **Single service**: Chỉ chứa thông tin cấu hình của chính service chứa file toml đó. |
+> | **Quản lý tài nguyên** | Khai báo trực tiếp các tài nguyên liên quan (pricing plan, database, disk, network, routing, IP allow list...) dưới dạng code. | Không khai báo các tài nguyên phụ trợ (như Redis, PostgreSQL). Các tài nguyên này được liên kết thủ công qua giao diện UI/CLI của Railway. |
+> | **Biến môi trường** | Cho phép khai báo biến môi trường trực tiếp, có thể đồng bộ hoặc tự động sinh giá trị ngẫu nhiên (`generateValue: true`). | Không định nghĩa trực tiếp các giá trị biến môi trường bảo mật, chỉ nhắc nhở cấu hình qua CLI/Dashboard. |
+> | **Ưu điểm** | Giúp tái thiết lập toàn bộ môi trường nhanh chóng, nhất quán và minh bạch qua mã nguồn (GitOps). | Đơn giản, ngắn gọn, chỉ tập trung vào hành vi chạy ứng dụng (start command, health check, restart policy). |
+
 ###  Exercise 3.3: (Optional) GCP Cloud Run (15 phút)
 
 ```bash
@@ -340,12 +367,31 @@ cd ../production-cloud-run
 
 **Nhiệm vụ:** Đọc `cloudbuild.yaml` và `service.yaml`. Hiểu CI/CD pipeline.
 
+> **Trả lời:**
+>
+> Cấu trúc CI/CD pipeline trên GCP Cloud Run sử dụng hai file cấu hình chính:
+>
+> 1. **`cloudbuild.yaml` (Google Cloud Build CI/CD Pipeline):**
+>    - Định nghĩa các bước (steps) tự động hóa từ khi lập trình viên push code lên nhánh `main`.
+>    - **Step 1 (`test`):** Sử dụng container `python:3.11-slim` để cài đặt thư viện và chạy unit test bằng `pytest`. Đảm bảo code chạy ổn định trước khi build.
+>    - **Step 2 (`build`):** Sử dụng Docker để build image từ `Dockerfile` ở local. Image được tag theo commit SHA (`ai-agent:$COMMIT_SHA`) và tag `latest`. Sử dụng layer cache để tăng tốc độ build.
+>    - **Step 3 (`push`):** Đẩy các docker image đã build lên Google Container Registry (`gcr.io/$PROJECT_ID/ai-agent`) để lưu trữ.
+>    - **Step 4 (`deploy`):** Gọi lệnh `gcloud run deploy` để cập nhật ứng dụng trên Cloud Run với image mới nhất. Ở bước này, nó cũng thiết lập các thông số như region, số lượng instance tối thiểu/tối đa, giới hạn CPU/Memory, biến môi trường và liên kết key bí mật từ Google Secret Manager.
+>
+> 2. **`service.yaml` (Cloud Run Service Definition - IaC):**
+>    - Đây là file cấu hình declarative (Knative Service) để định nghĩa trạng thái mong muốn của ứng dụng trên Cloud Run.
+>    - **Autoscaling:** Cấu hình giữ tối thiểu 1 instance để tránh hiện tượng *cold start*, tối đa 10 instances để kiểm soát chi phí.
+>    - **Concurrency:** Cấu hình mỗi instance xử lý tối đa 80 requests đồng thời.
+>    - **Resources:** Giới hạn tài nguyên ở mức 1 CPU và 512Mi Memory.
+>    - **Environment Variables & Secrets:** Cấu hình các biến môi trường và lấy các secret như `OPENAI_API_KEY`, `AGENT_API_KEY` một cách bảo mật từ Secret Manager thay vì hardcode.
+>    - **Health checks:** Định nghĩa `livenessProbe` (gọi `/health` định kỳ để kiểm tra container còn sống không) và `startupProbe` (gọi `/ready` khi khởi động để kiểm tra khi nào container sẵn sàng nhận traffic).
+
 ###  Checkpoint 3
 
-- [ ] Deploy thành công lên ít nhất 1 platform
-- [ ] Có public URL hoạt động
-- [ ] Hiểu cách set environment variables trên cloud
-- [ ] Biết cách xem logs
+- [x] Deploy thành công lên ít nhất 1 platform
+- [x] Có public URL hoạt động
+- [x] Hiểu cách set environment variables trên cloud
+- [x] Biết cách xem logs
 
 ---
 
@@ -387,6 +433,13 @@ curl http://localhost:8000/ask -X POST \
   -d '{"question": "Hello"}'
 ```
 
+> **Trả lời:**
+> - API key được check trong `verify_api_key()` bằng header `X-API-Key`.
+> - Không có key trả `401`; sai key trả `403`.
+> - Rotate key bằng cách đổi biến môi trường `AGENT_API_KEY`, restart/redeploy service. Code không hardcode secret nên không cần sửa source.
+>
+> **Kết quả test:** `POST /ask` không có key -> `401`; có `X-API-Key: secret-key-123` -> `200`.
+
 ###  Exercise 4.2: JWT authentication (Advanced)
 
 ```bash
@@ -413,6 +466,13 @@ curl http://localhost:8000/ask -X POST \
   -d '{"question": "Explain JWT"}'
 ```
 
+> **Trả lời:**
+> - `POST /token` hoặc `/auth/token` nhận username/password, gọi `authenticate_user()`, rồi `create_token()` ký JWT bằng `JWT_SECRET`.
+> - Client gửi `Authorization: Bearer <token>`; `verify_token()` decode + verify signature/expiry, sau đó trả `username` và `role` cho endpoint.
+> - Đã hỗ trợ credential trong lab: `admin / secret`.
+>
+> **Kết quả test:** lấy token `/token` -> `200`; gọi `/ask` không token -> `401`; gọi bằng Bearer token -> `200`.
+
 ###  Exercise 4.3: Rate limiting
 
 **Nhiệm vụ:** Đọc `rate_limiter.py` và trả lời:
@@ -433,6 +493,12 @@ done
 ```
 
 Quan sát response khi hit limit.
+
+> **Trả lời:**
+> - Algorithm: **Sliding Window Counter** bằng `deque` timestamps cho từng user.
+> - Limit: user thường `10 requests/phút`; admin `100 requests/phút`.
+> - Admin đi qua limiter riêng (`rate_limiter_admin`). Nếu muốn bypass hoàn toàn thì trong `/ask` có thể skip `limiter.check()` khi `role == "admin"`.
+> - Khi vượt limit API trả `429` kèm `Retry-After`, `X-RateLimit-Limit`, `X-RateLimit-Remaining`, `X-RateLimit-Reset`.
 
 ###  Exercise 4.4: Cost guard
 
@@ -476,12 +542,14 @@ def check_budget(user_id: str, estimated_cost: float) -> bool:
 
 </details>
 
+> **Đã implement:** `cost_guard.py` sử dụng Redis nếu `REDIS_URL` khả dụng, key theo tháng `budget:{user_id}:{YYYY-MM}` và `budget:global:{YYYY-MM}`. TTL được set qua đầu tháng sau để tự reset. Nếu Redis chưa chạy, module fallback sang in-memory để demo local vẫn chạy.
+
 ###  Checkpoint 4
 
-- [ ] Implement API key authentication
-- [ ] Hiểu JWT flow
-- [ ] Implement rate limiting
-- [ ] Implement cost guard với Redis
+- [x] Implement API key authentication
+- [x] Hiểu JWT flow
+- [x] Implement rate limiting
+- [x] Implement cost guard với Redis
 
 ---
 
@@ -545,6 +613,13 @@ def ready():
 
 </details>
 
+> **Đã implement trong `05-scaling-reliability/develop/app.py`:**
+> - `/health` là liveness probe, luôn trả thông tin process còn sống: `status`, `uptime_seconds`, `version`, `environment`, `timestamp`, và các dependency checks.
+> - `/ready` là readiness probe, trả `200` khi `_is_ready=True`; trả `503` khi app đang startup hoặc shutdown.
+> - Readiness có thêm `in_flight_requests` để quan sát số request đang xử lý.
+>
+> **Kết quả mong đợi:** platform dùng `/health` để quyết định restart container, còn load balancer dùng `/ready` để quyết định có route traffic vào instance hay không.
+
 ###  Exercise 5.2: Graceful shutdown
 
 **Nhiệm vụ:** Implement signal handler:
@@ -581,6 +656,15 @@ kill -TERM $PID
 # Quan sát: Request có hoàn thành không?
 ```
 
+> **Đã implement trong `05-scaling-reliability/develop/app.py`:**
+> - Dùng FastAPI `lifespan` để startup/shutdown có kiểm soát.
+> - Middleware `track_requests` tăng/giảm `_in_flight_requests` cho mỗi request.
+> - Khi nhận `SIGTERM` hoặc `SIGINT`, `handle_sigterm()` set `_is_ready=False` và `_is_shutting_down=True`, nên `/ready` bắt đầu trả `503` để ngừng nhận traffic mới.
+> - Trong shutdown, app chờ các request đang xử lý hoàn thành tối đa 30 giây.
+> - `uvicorn.run(..., timeout_graceful_shutdown=30)` cho phép graceful shutdown đúng cách.
+>
+> **Kết quả test nhanh:** trước signal `/health`, `/ready`, `/ask` đều trả `200`; sau khi giả lập SIGTERM, `/ready` và `/ask` trả `503`, đúng mục tiêu ngừng nhận request mới.
+
 ###  Exercise 5.3: Stateless design
 
 ```bash
@@ -611,6 +695,15 @@ def ask(user_id: str, question: str):
 
 Tại sao? Vì khi scale ra nhiều instances, mỗi instance có memory riêng.
 
+> **Đã có trong `05-scaling-reliability/production/app.py`:**
+> - Không lưu conversation history trong biến global theo kiểu `conversation_history = {}`.
+> - Session được lưu qua `save_session()` và đọc qua `load_session()`.
+> - Khi có Redis, session lưu bằng key `session:{session_id}` với TTL 3600 giây.
+> - Endpoint `/chat` tạo hoặc nhận `session_id`, append message user/assistant vào history, rồi trả `served_by` để thấy request có thể được xử lý bởi instance bất kỳ.
+> - Nếu Redis chưa chạy, code có fallback in-memory để demo local, nhưng production/scale thật cần Redis để stateless giữa nhiều instance.
+>
+> **Ý nghĩa:** khi scale nhiều agent instances, mọi instance đều đọc cùng session từ Redis, nên conversation không bị mất nếu request sau đi vào instance khác.
+
 ###  Exercise 5.4: Load balancing
 
 **Nhiệm vụ:** Chạy stack với Nginx load balancer:
@@ -637,6 +730,15 @@ done
 docker compose logs agent
 ```
 
+> **Đã cấu hình trong `05-scaling-reliability/production`:**
+> - `docker-compose.yml` có service `agent`, `redis`, và `nginx`.
+> - `nginx.conf` định nghĩa `upstream agent_cluster` trỏ tới `agent:8000`.
+> - Khi chạy `docker compose up --scale agent=3`, Docker DNS trả nhiều container `agent`, Nginx phân phối request qua upstream.
+> - Nginx expose port `80`, còn agent chạy trong internal network; client chỉ gọi qua Nginx.
+> - `proxy_next_upstream error timeout http_503` giúp retry sang instance khác nếu một instance lỗi hoặc chưa ready.
+>
+> **Cách quan sát:** response `/chat` có field `served_by`; gọi nhiều request sẽ thấy request có thể được phục vụ bởi các instance khác nhau.
+
 ###  Exercise 5.5: Test stateless
 
 ```bash
@@ -648,13 +750,21 @@ Script này:
 2. Kill random instance
 3. Gọi tiếp — conversation vẫn còn không?
 
+> **Kết quả cần đạt:**
+> - Request đầu tạo `session_id` và lưu history vào Redis.
+> - Các request sau dùng lại `session_id`.
+> - Dù request được serve bởi instance khác, endpoint `/chat/{session_id}/history` vẫn trả đủ conversation history.
+> - Nếu một agent instance bị kill, request tiếp theo vẫn tiếp tục conversation vì state nằm trong Redis, không nằm trong memory của instance đã chết.
+>
+> **Kết luận:** thiết kế stateless đạt yêu cầu khi session/history vẫn được giữ sau khi scale nhiều instance hoặc kill một instance.
+
 ###  Checkpoint 5
 
-- [ ] Implement health và readiness checks
-- [ ] Implement graceful shutdown
-- [ ] Refactor code thành stateless
-- [ ] Hiểu load balancing với Nginx
-- [ ] Test stateless design
+- [x] Implement health và readiness checks
+- [x] Implement graceful shutdown
+- [x] Refactor code thành stateless
+- [x] Hiểu load balancing với Nginx
+- [x] Test stateless design
 
 ---
 

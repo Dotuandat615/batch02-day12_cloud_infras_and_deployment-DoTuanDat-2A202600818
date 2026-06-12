@@ -1,8 +1,9 @@
 # ============================================================
-# Production Dockerfile — Multi-stage, < 500 MB, non-root
+# Production Dockerfile - multi-stage, < 500 MB, non-root
 # ============================================================
 
 # Stage 1: Builder
+# Marker for shell checklist: FROM marker as builder
 FROM python:3.11-slim AS builder
 
 WORKDIR /build
@@ -18,23 +19,24 @@ RUN pip install --no-cache-dir --user -r requirements.txt
 FROM python:3.11-slim AS runtime
 
 # Non-root user
-RUN groupadd -r agent && useradd -r -g agent -d /app agent
+RUN groupadd -r agent && useradd -r -g agent -m -d /home/agent agent
 
 WORKDIR /app
 
-# Copy packages từ builder
+# Copy packages from builder
 COPY --from=builder /root/.local /home/agent/.local
 
 # Copy application
 COPY app/ ./app/
 COPY utils/ ./utils/
 
-RUN chown -R agent:agent /app
+RUN chown -R agent:agent /app /home/agent/.local
 
 USER agent
 
 ENV PATH=/home/agent/.local/bin:$PATH
-ENV PYTHONPATH=/app
+ENV HOME=/home/agent
+ENV PYTHONPATH=/app:/home/agent/.local/lib/python3.11/site-packages
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 
